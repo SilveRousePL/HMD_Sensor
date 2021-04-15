@@ -1,5 +1,17 @@
 # HMD_Sensor
 Home Motion Detector - WiFi sensor based on NodeMCU v3
 
-It's a deprecated branch. I kept it because of features like sync with google or ntp etc.
-The current form of the project can be found on branch **main**.
+Main features:
+---
+- Detecting motion with a PIR sensor
+- Sending data via wireless network (UDP packet)
+- Data sent as JSON
+- Temperature measurement (DS18B20 1-wire sensor)
+- Status messages (main info + periodic check-ins)
+- NTP time
+- Low power consumption
+
+TODO:
+---
+- Improvement energy saving
+- Add encrypt messages
