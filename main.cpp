@@ -10,182 +10,85 @@
 /* ---------------------------------- WIFI AND CRED ----------------------------------- */
 const char*    ssid      = "<YOUR WIFI SSID>";
 const char*    password  = "<YOUR WIFI PASSWORD>";
-const char*    aes_key   = "<UNUSED>";
 const char*    dest_ip   = "255.255.255.255";
 const uint16_t dest_port = 6969;
-const char*    google_fp = "12 34 56 78 9A BC DE F0 12 34 56 78 90 AB CD BE EF 00 DE AD";
-const char*    gsheet_id = "Kp9kPQN8XUJR3N6fNJZvAw-gcbDYGHbaWsQvAxufjPy_Fb9H_R48cuRR"; // Keep Calm! It's just an example
+const char*    aes_key   = "<UNUSED>";
 
 /* -------------------------------------- PINOUT -------------------------------------- */
-const uint8_t pir_pin     = 14;
-const uint8_t sensors_pin = 0;
+const uint8_t pir_pin  = 14;
+const uint8_t temp_pin = 0;
 
 /* ----------------------------------- LOOP TIMERS ------------------------------------ */
-const unsigned long status_update_time = 30000UL;   // 30 sec
-const unsigned long gsheet_update_time = 180000UL;  // 3 min
 const unsigned long ntpupd_update_time = 3600000UL; // 1 h
+const unsigned long temper_update_time = 120000UL;  // 120 sec
+const unsigned long status_update_time = 60000UL;   // 60 sec
 
 /* ------------------------------------ PARAMETERS ------------------------------------ */
-const int   buffer_slots_number = 128;
-const int   buffer_slot_size    = 128;
-const int   header_size         = 256;
-const char* ntp_server          = "europe.pool.ntp.org";
+const uint32_t sensor_id  = 10000;
+const char*    ntp_server = "europe.pool.ntp.org";
+
+/* --------------------------------------- JSON --------------------------------------- */
+const char* json = "{\"sensor_id\": %u, \"time\": \"%u\", \"type\": \"%s\", \"uptime\": %u, \"motion\": %d, \"motion_counter\": %u, \"temp0\": %f}";
 
 /* =================================== END OF CONF ==================================== */
 /* ==================================================================================== */
 
 
 WiFiUDP udp;
-OneWire onewire(sensors_pin);
+OneWire onewire(temp_pin);
 DallasTemperature temp_sensors(&onewire);
 NTPClient ntp(udp, ntp_server);
-volatile unsigned int motion_counter = 0;
 
-class GoogleSender
+volatile int   motion_counter = 0;
+volatile int   motion         = false;
+volatile float temp0          = 0.0f;
+
+
+void buildJsonMessage(char* msg, const char* type)
 {
-    WiFiClientSecure client;
+    unsigned long time        = ntp.getEpochTime();
+    unsigned long uptime      = millis();
 
-    const char* host = "script.google.com";
-    const int   port = 443;
-
-    char header [header_size];
-
-    char buffer [buffer_slots_number][buffer_slot_size];
-    uint16_t buffer_size;
-
-    char** back_buffer;
-    uint16_t back_buffer_size;
-    
-public:
-    GoogleSender() : buffer_size(0)
-    {
-        sprintf(header, "POST /macros/s/%s/exec HTTP/1.1\r\nHost: %s\r\nUser-Agent: HMD-Sensor\r\nContent-Type: application/json\r\nContent-Length: ", gsheet_id, host);
-    }
-
-    void add(const char* msg)
-    {
-        strcpy(buffer[buffer_size], msg);
-        buffer_size++;
-        Log.notice("Added to Google Sheet buffer: %d/%d" CR, buffer_size, buffer_slots_number);
-    }
-
-    int lengthJsonList()
-    {
-        // Length for json list format: [{...},{...},{...}] (all_json_length + comma_number + brackets_number)
-        int result = buffer_size + 1; // buffer_size - 1 (comma_number) + 2 brackets
-        if(buffer_size == 0) result++; // If buffer is empty, json will have 2 brackets []
-        for(int i = 0; i < buffer_size; ++i)
-        {
-            result += strlen(buffer[i]);
-        }
-        return result;
-    }
-
-    void clear()
-    {
-        buffer_size = 0;
-    }
-
-    void send()
-    {
-        Log.notice("Sending to Google Sheet" CR);
-
-        client.setInsecure();
-        if (!client.connect(host, port)) {
-            Log.error("Connection failed" CR);
-            return;
-        }
-
-        if (client.verify(google_fp, host)) Log.notice("Certificate matches" CR);
-        else                                Log.warning("Certificate doesn't match" CR);
-
-        int content_length = lengthJsonList();
-
-        client.print(header);
-        client.println(content_length);
-        client.println();
-        client.print("[");
-        for(int i = 0; i < buffer_size; ++i)
-        {
-            client.print(buffer[i]);
-            if(i < buffer_size - 1) client.print(",");
-        }
-        client.println("]");
-
-        // while (client.connected()) {
-        //     String line = client.readStringUntil('\n');
-        //     if (line == "\r") {
-        //         Serial.println("headers received");
-        //         break;
-        //     }
-        // }
-        // String line = client.readStringUntil('\n');
-
-        Log.notice("Google sheet sent!" CR);
-        
-        clear();
-    }
-
-} google_sheet;
-
-bool isWifiConnected()
-{
-    return WiFi.status() == WL_CONNECTED;
+    sprintf(msg, json, sensor_id, time, type, uptime, motion, motion_counter, temp0);
 }
 
-void sendUdpMessage(const char* msg)
+void encrypt(char* msg, const char* key)
 {
-    Log.notice("UDP sending: %s" CR, msg);
+    // TODO: Encrypt
+}
+
+void sendUdpMessage(const char* type)
+{
+    char msg [250];
+    buildJsonMessage(msg, type);
+    Log.notice("[Message] Send via UDP: %s" CR, msg);
     udp.beginPacket(dest_ip, dest_port);
-    // Encrypt msg
+    encrypt(msg, aes_key);
     udp.write(msg);
     udp.endPacket();
-    Log.notice("UDP sent!" CR);
 }
 
-void sendHello(unsigned int motion_counter, float temperature)
+float getTemperature(int index)
 {
-    Log.notice("Send hello msg, motion_counter:%u, temperature:%f" CR, motion_counter, temperature);
-    char msg [150];
-    const char* json = "{\"time\": \"%u\", \"type\": \"hello\", \"uptime\": %u, \"motion_counter\": %u, \"temp0\": %f}";
-
-    unsigned long time   = ntp.getEpochTime();
-    unsigned long uptime = millis();
-
-    sprintf(msg, json, time, uptime, motion_counter, temperature);
-    sendUdpMessage(msg);
-    google_sheet.add(msg);
-    Log.notice("Hello sent!" CR);
+    return temp_sensors.getTempCByIndex(index);
 }
 
-void sendStatusUpdate(unsigned int motion_counter, float temperature)
+void updateTemperatures()
 {
-    Log.notice("Send status update, motion_counter:%u, temperature:%f" CR, motion_counter, temperature);
-    char msg [150];
-    const char* json = "{\"time\": \"%u\", \"type\": \"status\", \"uptime\": %u, \"motion_counter\": %u, \"temp0\": %f}";
-    
-    unsigned long time   = ntp.getEpochTime();
-    unsigned long uptime = millis();
-
-    sprintf(msg, json, time, uptime, motion_counter, temperature);
-    sendUdpMessage(msg);
-    google_sheet.add(msg);
-    Log.notice("Status sent!" CR);
+    temp_sensors.requestTemperatures();
+    temp0 = getTemperature(0);
 }
 
-void sendMotionUpdate(int motion, unsigned int motion_counter)
+ICACHE_RAM_ATTR void motionDetected()
 {
-    Log.notice("Send motion update, motion:%d, motion_counter:%u" CR, motion, motion_counter);
-    char msg [150];
-    const char* json = "{\"time\": \"%u\", \"type\": \"motion\", \"uptime\": %u, \"motion\": %d, \"motion_counter\": %u}";
-    
-    unsigned long time   = ntp.getEpochTime();
-    unsigned long uptime = millis();
-
-    sprintf(msg, json, time, uptime, motion, motion_counter);
-    sendUdpMessage(msg);
-    google_sheet.add(msg);
-    Log.notice("Motion sent!" CR);
+    motion = digitalRead(pir_pin);
+    Log.notice("[Motion] INTERRUPT! %s" CR, motion ? "Motion detected" : "No motion");
+    if(motion)
+    {
+        motion_counter++;
+        Log.notice("[Motion] Current motion counter: %d" CR, motion_counter);
+    }
+    sendUdpMessage("motion");
 }
 
 void setupWifi()
@@ -193,71 +96,40 @@ void setupWifi()
     Log.notice("[WiFi] Connecting to %s ", ssid);
     WiFi.softAPdisconnect(true);
     WiFi.begin(ssid, password);
-    while(!isWifiConnected()) {
+    while(WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
     }
-    Log.notice(CR "[WiFi] Connected, IP:%s " CR, WiFi.localIP().toString().c_str());
-}
-
-float getTemperature()
-{
-    Log.notice("Get temperature from sensor 0 " CR);
-    temp_sensors.requestTemperatures();
-    return temp_sensors.getTempCByIndex(0);
-}
-
-ICACHE_RAM_ATTR void motionDetected()
-{
-    int motion = digitalRead(pir_pin);
-    Log.notice("MOTION INTERRUPT! Motion:%d" CR, motion);
-    if(motion)
-    {
-        motion_counter++;
-    }
-    Log.notice("Current motion counter:%u" CR, motion_counter);
-    sendMotionUpdate(motion, motion_counter);
-    Log.notice("Interrupt done" CR);
+    Log.notice(CR "[WiFi] Connected, IP: %s " CR, WiFi.localIP().toString().c_str());
 }
 
 void setup()
 {
     Serial.begin(115200);
     Log.begin(LOG_LEVEL_VERBOSE, &Serial);
-    Log.notice("SETUP START" CR);
+    Log.notice("[Startup] SETUP START" CR);
+    Log.notice("[Startup] Compile time: %s %s" CR, __DATE__, __TIME__);
 
     setupWifi();
     ntp.begin();
     ntp.update();
-    
-    sendHello(motion_counter, getTemperature());
 
     temp_sensors.begin();
-    Log.notice("Temperature sensors initialized" CR);
     attachInterrupt(digitalPinToInterrupt(pir_pin), motionDetected, CHANGE);
-    Log.notice("Motion detector initialized" CR);
 
-    Log.notice("SETUP DONE" CR);
+    updateTemperatures();
+    motion = digitalRead(pir_pin);
+
+    sendUdpMessage("hello");
+    Log.notice("[Startup] SETUP DONE" CR);
 }
 
-unsigned long recent_exectime_status;
-unsigned long recent_exectime_gsheet;
 unsigned long recent_exectime_ntpupd;
+unsigned long recent_exectime_temper;
+unsigned long recent_exectime_status;
 void loop()
 {
     unsigned long uptime = millis();
-
-    if(uptime - recent_exectime_status >= status_update_time) 
-    {
-        recent_exectime_status = uptime;
-        sendStatusUpdate(motion_counter, getTemperature());
-    }
-
-    if(uptime - recent_exectime_gsheet >= gsheet_update_time)
-    {
-        recent_exectime_gsheet = uptime;
-        google_sheet.send();
-    }
 
     if(uptime - recent_exectime_ntpupd >= ntpupd_update_time)
     {
@@ -265,5 +137,17 @@ void loop()
         ntp.update();
     }
 
-    delay(1);
+    if(uptime - recent_exectime_temper >= temper_update_time)
+    {
+        recent_exectime_temper = uptime;
+        updateTemperatures();
+    }
+
+    if(uptime - recent_exectime_status >= status_update_time) 
+    {
+        recent_exectime_status = uptime;
+        sendUdpMessage("status");
+    }
+
+    delay(500);
 }
